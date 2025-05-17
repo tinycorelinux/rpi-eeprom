@@ -1,0 +1,42 @@
+#!/bin/sh
+
+# piCore script to update Raspberry Pi4/5 boot EEPROM.
+
+usage() {
+	echo "Usage:"
+	echo "$0 <options>"
+	echo ""
+	echo "The default firmware upgrade is from the critical firmware branch"
+	echo "  to override, set the FIRMWARE_RELEASE_STATUS environmen variable"
+	echo "  export FIRMWARE_RELEASE_STATUS=<default|latest>"
+   echo ""
+	echo "----------------------------------------------"
+	echo ""
+	echo "rpi-eeprom-config options"
+	rpi-eeprom-config -h
+	exit
+}
+
+mount_boot_partition() {
+   BOOTPART="$(tc_autoscan 'bootcode.bin' 'f')"
+   BOOTDEV=${BOOTPART%%/*}
+   find_mountpoint "$BOOTDEV"
+   if [ -n "$MOUNTPOINT" ]; then
+      mount $MOUNTPOINT
+   fi
+}
+
+OPTS=""
+for A in $@; do
+	case $A in
+		--help) usage;;
+		*)OPTS="$OPTS $A";;
+	esac
+done
+
+if [ "$OPTS" != "" ]; then
+	#If No OPTS are present, then we don't need to mount to just display the current config
+	mount_boot_partition >/dev/null 2>&1
+fi
+
+sudo -E rpi-eeprom-config $OPTS

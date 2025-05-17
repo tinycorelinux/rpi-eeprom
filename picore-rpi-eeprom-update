@@ -1,0 +1,111 @@
+#!/bin/sh
+
+# pCP script to update Raspberry Pi4/5 boot EEPROM.
+
+VERSION="v27.9-1-piCore"
+
+. /etc/init.d/tc-functions
+PACKAGEDIR=/etc/sysconfig/tcedir/optional
+
+checknotroot
+
+update_ext() {
+	WGET="busybox wget"
+	DIFF="busybox diff"
+	MD5="busybox md5sum"
+	UPGRADE_DIR=${PACKAGEDIR}/upgrade
+
+	rm -f /tmp/rpi-eeprom.tcz*
+
+	echo "[ INFO ] Checking for package update: rpi-eeprom.tcz"
+	echo "[ INFO ] You are running release $VERSION"
+	LATEST=$($WGET -q https://api.github.com/repos/tinycorelinux/rpi-eeprom/releases/latest -O - | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+	echo "[ INFO ] The latest release is $LATEST"
+
+	$WGET -q https://github.com/tinycorelinux/rpi-eeprom/releases/latest/download/rpi-eeprom.tcz.md5.txt -P /tmp
+	$DIFF -q /tmp/rpi-eeprom.tcz.md5.txt /etc/sysconfig/tcedir/optional/rpi-eeprom.tcz.md5.txt >/dev/null 2>&1
+	if [ $? -eq 0 ]; then
+	   echo "[ INFO ] Extension version Matches"
+   	exit 2
+	else
+	   echo "[ INFO ] Update Required."
+	   $WGET -q https://github.com/tinycorelinux/rpi-eeprom/releases/latest/download/rpi-eeprom.tcz -P /tmp
+	fi
+
+	cd /tmp
+	echo "[ INFO ] Validating MD5's of new extensions"
+	$MD5 -cs rpi-eeprom.tcz.md5.txt
+	[ -d $UPGRADE_DIR ] || mkdir -p $UPGRADE_DIR
+	if [ $? -eq 0 ]; then
+	   mv -f /tmp/rpi-eeprom.tcz* ${UPGRADE_DIR}
+	else
+	   echo "[ERROR] rpi-eeprom.tcz failed md5 check."
+	   exit 1
+	fi
+
+	echo "[ INFO ] A reboot is needed to load new rpi-eeprom extension."
+	exit
+}
+
+usage() {
+	echo "Usage:"
+	echo "$0 --update:   Update rpi-eeprom.tcz extension"
+	echo ""
+	echo "The default firmware upgrade is from the critical firmware branch"
+	echo "  to override, set the FIRMWARE_RELEASE_STATUS environmen variable"
+	echo "  export FIRMWARE_RELEASE_STATUS=<default|latest>"
+   echo ""
+	echo "----------------------------------------------"
+	echo ""
+	echo "rpi-eeprom-update options"
+	rpi-eeprom-update -h
+	exit
+}
+
+mount_boot_partition() {
+	BOOTPART="$(tc_autoscan 'bootcode.bin' 'f')"
+	BOOTDEV=${BOOTPART%%/*}
+	find_mountpoint "$BOOTDEV"
+	if [ -n "$MOUNTPOINT" ]; then
+		mount $MOUNTPOINT
+	fi
+}
+
+OPTS=""
+for A in $@; do
+	case $A in
+		--update) update_ext;;
+		--help) usage;;
+		*)OPTS="$OPTS $A";;
+	esac
+done
+
+mount_boot_partition >/dev/null 2>&1
+
+if [ ! -f ${PACKAGEDIR}/raspi-utils.tcz ]; then
+	echo "raspi-utils extension is required for this tool"
+	exit 1
+elif [ ! -f /usr/local/bin/vcgencmd ]; then
+	tce-load -i raspi-utils.tcz
+fi
+
+if [ ! -f ${PACKAGEDIR}/pciutils.tcz ]; then
+	echo "pciutils extension is required for this tool"
+	exit 1
+elif [ ! -f /usr/local/bin/lspci ]; then
+	tce-load -i pciutils.tcz
+fi
+
+[ -f ${PACKAGEDIR}/python3.11.tcz ] && PYTHON3PKG=python3.11.tcz
+[ -f ${PACKAGEDIR}/python3.12.tcz ] && PYTHON3PKG=python3.12.tcz
+if [ ! -f ${PACKAGEDIR}/$PYTHON3PKG ]; then
+	echo "python 3 extension is required for this tool"
+	exit 1
+elif [ ! -f /usr/local/bin/python3 ]; then
+	tce-load -i $PYTHON3PKG
+fi
+
+[ ! -x /usr/local/bin/python ] && sudo ln -s /usr/local/bin/python3 /usr/local/bin/python
+
+echo "piCore rpi-eeprom package version: $VERSION"
+sudo -E rpi-eeprom-update $OPTS

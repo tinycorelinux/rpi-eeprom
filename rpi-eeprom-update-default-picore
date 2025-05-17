@@ -1,0 +1,11 @@
+TCEDEV="/dev/$(readlink /etc/sysconfig/tcedir | cut -d '/' -f3)"
+TCEMNT="/mnt/$(readlink /etc/sysconfig/tcedir | cut -d '/' -f3)"
+BOOTDEV=${TCEDEV%%?}1
+BOOTMNT=${TCEMNT%%?}1
+FIRMWARE_ROOT=/tmp/tcloop/rpi-eeprom/usr/local/lib/firmware/raspberrypi/bootloader
+FIRMWARE_RELEASE_STATUS="${FIRMWARE_RELEASE_STATUS:-default}"
+FIRMWARE_IMAGE_DIR="${FIRMWARE_ROOT}/${FIRMWARE_RELEASE_STATUS}"
+FIRMWARE_BACKUP_DIR="/etc/sysconfig/tcedir/raspberrypi/bootloader/backup"
+BOOTFS=${BOOTMNT}
+RPI_EEPROM_USE_FLASHROM=0
+EEPROM_CONFIG_HOOK=
