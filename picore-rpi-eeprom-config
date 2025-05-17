@@ -2,6 +2,11 @@
 
 # piCore script to update Raspberry Pi4/5 boot EEPROM.
 
+. /etc/init.d/tc-functions
+PACKAGEDIR=/etc/sysconfig/tcedir/optional
+
+checknotroot
+
 function usage() {
 	echo "Usage:"
 	echo "$0 <options>"
