@@ -2,14 +2,14 @@
 
 # piCore script to update Raspberry Pi4/5 boot EEPROM.
 
-usage() {
+function usage() {
 	echo "Usage:"
 	echo "$0 <options>"
 	echo ""
 	echo "The default firmware upgrade is from the critical firmware branch"
-	echo "  to override, set the FIRMWARE_RELEASE_STATUS environmen variable"
-	echo "  export FIRMWARE_RELEASE_STATUS=<default|latest>"
-   echo ""
+	echo "	to override, set the FIRMWARE_RELEASE_STATUS environmen variable"
+	echo "	export FIRMWARE_RELEASE_STATUS=<default|latest>"
+	echo ""
 	echo "----------------------------------------------"
 	echo ""
 	echo "rpi-eeprom-config options"
@@ -17,13 +17,47 @@ usage() {
 	exit
 }
 
-mount_boot_partition() {
-   BOOTPART="$(tc_autoscan 'bootcode.bin' 'f')"
-   BOOTDEV=${BOOTPART%%/*}
-   find_mountpoint "$BOOTDEV"
-   if [ -n "$MOUNTPOINT" ]; then
-      mount $MOUNTPOINT
-   fi
+function mount_boot_partition() {
+	BOOTPART="$(tc_autoscan 'bootcode.bin' 'f')"
+	BOOTDEV=${BOOTPART%%/*}
+	find_mountpoint "$BOOTDEV"
+	if [ -n "$MOUNTPOINT" ]; then
+		mount $MOUNTPOINT
+	fi
+}
+
+function load_deps() {
+	if [ ! -f ${PACKAGEDIR}/raspi-utils.tcz ]; then
+		echo "raspi-utils extension is required for this tool"
+		exit 1
+	elif [ ! -f /usr/local/bin/vcgencmd ]; then
+		tce-load -i raspi-utils.tcz
+	fi
+
+	if [ ! -f ${PACKAGEDIR}/pciutils.tcz ]; then
+		echo "pciutils extension is required for this tool"
+		exit 1
+	elif [ ! -f /usr/local/bin/lspci ]; then
+		tce-load -i pciutils.tcz
+	fi
+
+	[ -f ${PACKAGEDIR}/python3.11.tcz ] && PYTHON3PKG=python3.11.tcz
+	[ -f ${PACKAGEDIR}/python3.12.tcz ] && PYTHON3PKG=python3.12.tcz
+	if [ ! -f ${PACKAGEDIR}/$PYTHON3PKG ]; then
+		echo "python 3 extension is required for this tool"
+		exit 1
+	elif [ ! -f /usr/local/bin/python3 ]; then
+		tce-load -i $PYTHON3PKG
+	fi
+
+	[ ! -x /usr/local/bin/python ] && sudo ln -s /usr/local/bin/python3 /usr/local/bin/python
+
+	if [ ! -f ${PACKAGEDIR}/coreutils.tcz ]; then
+		echo "coreutils extension is required for this tool"
+		exit 1
+	elif [ ! -f /usr/local/bin/sha256sum ]; then
+		tce-load -i coreutils.tcz
+	fi
 }
 
 OPTS=""
@@ -34,9 +68,22 @@ for A in $@; do
 	esac
 done
 
+load_deps
+
 if [ "$OPTS" != "" ]; then
 	#If No OPTS are present, then we don't need to mount to just display the current config
 	mount_boot_partition >/dev/null 2>&1
 fi
+
+[ -f ${PACKAGEDIR}/python3.11.tcz ] && PYTHON3PKG=python3.11.tcz
+[ -f ${PACKAGEDIR}/python3.12.tcz ] && PYTHON3PKG=python3.12.tcz
+if [ ! -f ${PACKAGEDIR}/$PYTHON3PKG ]; then
+	echo "python 3 extension is required for this tool"
+	exit 1
+elif [ ! -f /usr/local/bin/python3 ]; then
+	tce-load -i $PYTHON3PKG
+fi
+
+[ ! -x /usr/local/bin/python ] && sudo ln -s /usr/local/bin/python3 /usr/local/bin/python
 
 sudo -E rpi-eeprom-config $OPTS
