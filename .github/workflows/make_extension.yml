@@ -1,0 +1,72 @@
+name: Release Extension
+
+on:
+  push:
+    tags:
+    - 'v*'
+
+jobs:
+  build:
+    name: Create Extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          path: rpi_eeprom_git
+
+      - name: Copy Code
+        run: |
+             mkdir -p sqfs-root/usr/local/lib/firmware/raspberrypi
+             mkdir -p sqfs-root/usr/local/bin
+             mkdir -p sqfs-root/etc/default
+             mkdir -p sqfs-root/usr/local/share/rpi-eeprom
+
+             #Copy executables
+             cp rpi_eeprom_git/rpi-eeprom-config sqfs-root/usr/local/bin/
+             cp rpi_eeprom_git/rpi-eeprom-digest sqfs-root/usr/local/bin/
+             cp rpi_eeprom_git/rpi-eeprom-update sqfs-root/usr/local/bin/
+             cp rpi_eeprom_git/picore-rpi-eeprom-* sqfs-root/usr/local/bin/
+             cp rpi_eeprom_git/tools/rpi* sqfs-root/usr/local/bin/
+             chmod 755 sqfs-root/usr/local/bin/*
+
+             # Copy default variables
+             cp rpi_eeprom_git/rpi-eeprom-update-default-picore sqfs-root/etc/default/rpi-eeprom-update
+
+             # Copy License file
+             cp rpi_eeprom_git/LICENSE sqfs-root/usr/local/share/rpi-eeprom
+
+             # Copy Firmware, removing archived firmware
+             cp -av rpi_eeprom_git/firmware-2711 sqfs-root/usr/local/lib/firmware/raspberrypi
+             rm -rf sqfs-root/usr/local/lib/firmware/raspberrypi/firmware-2711/old
+             mv sqfs-root/usr/local/lib/firmware/raspberrypi/firmware-2711 sqfs-root/usr/local/lib/firmware/raspberrypi/bootloader-2711
+
+             cp -av rpi_eeprom_git/firmware-2712 sqfs-root/usr/local/lib/firmware/raspberrypi
+             rm -rf sqfs-root/usr/local/lib/firmware/raspberrypi/firmware-2712/old
+             mv sqfs-root/usr/local/lib/firmware/raspberrypi/firmware-2712 sqfs-root/usr/local/lib/firmware/raspberrypi/bootloader-2712
+
+      - name: Create Extension
+        id: make_tcz
+        run: |
+            mksquashfs ./sqfs-root rpi-eeprom.tcz -b 16384
+            md5sum rpi-eeprom.tcz > rpi-eeprom.tcz.md5.txt
+
+      - name: List Extension
+        run: |
+            unsquashfs -ll rpi-eeprom.tcz
+            unsquashfs -l rpi-eeprom.tcz | sed 's|squashfs-root/||' > rpi-eeprom.tcz.list
+
+      - name: Create a Release in a GitHub Action
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            rpi-eeprom.tcz
+            rpi-eeprom.tcz.md5.txt
+            rpi-eeprom.tcz.list
