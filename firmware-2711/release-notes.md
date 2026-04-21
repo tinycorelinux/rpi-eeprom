@@ -1,5 +1,282 @@
 # Raspberry Pi4 bootloader EEPROM release notes
 
+## 2026-04-14: Update Broadcom SDRAM firmware to v2.34 (latest)
+
+* Update the Broadcom SDRAM firmware to v2.34 to support
+  a wider variety of SDRAM chips.
+* Add an error code for the bootloader memory test.
+  The bootloader contains simple memory test to validate
+  that the DDR init firmware has completed successfully.
+  If the DDR init firmware reports an error code then continue to
+  display 8 short flashes. However, if the DDR init firmware is
+  successful but the memory test fails then display 5 short flashes.
+  This is very unlikely to fail in practise but is useful debug
+  mechanism when stress testing boards e.g. different temperatures.
+* vcfw/plat_conf: Allow configuration of DPI clock from dt-blob
+* Automatically reboot after a displaying a fatal error
+  Change the fatal error handler to perform a hard reset after
+  displaying the fatal error three times in a row instead of waiting
+  forever. This change can mitigate intermittent hardware issues due
+  e.g. power supplies, HATs or board temperature.
+  Displaying the error pattern three times first rate
+  limits reboots. If a faster reboot is required then the
+  BOOT_WATCHDOG setting should be used instead.
+  To disable this feature set REBOOT_ON_FATAL_ERROR=0 in
+  the bootloader config.
+
+## 2026-02-23: Fix partition walk for boot_ramdisk / secure-boot (latest)
+
+* Fix partition walk for boot_ramdisk / secure-boot
+  If secure-boot / boot_ramdisk was enabled and boot.img was not found
+  then the bootloader would immediately exit the boot mode instead
+  allowing the partition walk to run. Change the logic to allow
+  retries if partition walk was enabled.
+
+## 2026-02-06: config: Add support for customer OTP rows in conditional expressions (latest)
+
+* config: Add support for customer OTP rows in conditional expressions
+  Support conditional filter for eight customer OTP rows to be used by config.txt from Pi 1 onwards.
+  (Requires updated start4.elf)
+* rpi-fw-crypto: Fix bad hmac arguments lock-up
+  Improve argument validation so that a bad key-id or invalid private key
+  can no longer cause a lock-up during HMAC operations.
+* Assume eMMC for CM4/CM5 non-lite
+  Attempt the fast path by skipping the SD interface condition command timeout on CM4/CM5 (non-lite) modules and enable eMMC mode directly. This saves ~250ms of the boot time.
+
+## 2026-01-13: Promote 2026-01-09 to the default release (default)
+
+## 2026-01-09: arm_loader: Apply rpifwcrypto lock permissions GET/SET USER OTP (latest)
+
+* arm_loader: Apply rpifwcrypto lock permissions GET/SET USER OTP
+  Previously, the GET/SET user OTP mailboxes would provide access to the
+  device unique private key. Update the mailbox API to fail if the
+  key has been locked via lock_device_private_key=1 in config.txt or
+  the associated mailbox call.
+  GET/SET user OTP fails by setting the result tag to the standard
+  error code (0x80000000). The dedicate GET/SET private key continue
+  to fail the entire mailbox operation to force vcmailbox to exit
+  with a non-zero error code.
+* cm5: Add support for 8-bit bus width eMMC
+* Query all sdram devices for temperature when adjusting refresh
+* Add support for more SDRAM die configurations.
+
+## 2025-12-09: Promote 2025-12-08 to the default release (default)
+
+## 2025-12-08: arm_loader: Add machine ID derived from OTP values (latest)
+
+* arm_loader: Add machine ID derived from OTP values
+  Machine ID is generated and exposed in device tree as rpi-machine-id
+* arm_ldconfig: Avoid double os_prefix on initramfs
+  When using auto_initramfs we were picking up prefix from the kernel,
+  but also adding os_prefix later:
+  fname = prefixed_path(initramfs_file, os_prefix, temp_path, sizeof(temp_path));
+  See: https://forums.raspberrypi.com/viewtopic.php?t=394238
+* recovery: Use OTP rpiboot GPIO if non-zero
+  If an rpiboot GPIO has already been written to OTP then default to
+  that value if C(program_rpiboot_gpio) is not specified on config.txt.
+
+## 2025-11-27: helpers/config_loader: Also support bootvar0 eeprom config on Pi4 (latest)
+
+* helpers/config_loader: Also support bootvar0 eeprom config on Pi4
+  This allows an eeprom config setting (e.g. BOOTARG0=0x10) to be set on a board
+  which config.txt can use as a conditional expression (e.g. [bootarg0&0x10]).
+* pi5: Write over-voltage config to the UART log
+  Write the high level over-voltage configuration to the UART log for
+  diagnostic purposes.
+* Stop partition-walk after boot-mode timeout/retries limit
+  Fix a fatal assert with USB boot where the partition walk could be
+  retried after the USB timeout/retry limit had been reached.
+  See: https://github.com/raspberrypi/rpi-eeprom/issues/776
+* rpiboot: Extend metadata to report status of operations
+  Report success/fail status of recovery operations based on config.txt settings
+
+## 2025-11-21: recovery: Restore recovery_wait option (latest)
+
+* recovery: Restore recovery_wait option
+  Restore the recovery_wait config.txt option. If this option is set
+  then recovery.bin will not rename itself or reboot. Instead flash
+  the activity LED on completion.
+  This option can be useful when creating an SD card to erase the
+  EEPROM or program the RPIBOOT gpio on multiple devices.
+  If recovery_wait=1 and recovery.bin is run from the SD card then
+  indicate success of erase_eeprom=1 or program_rpiboot_gpio=N was
+  set instead of requiring the EEPROM to be updated.
+* Manufacture test updates for SDRAM.
+
+## 2025-11-09: Promote 2025-11-05 to the default release (default)
+
+## 2025-11-05: Add iommu_dma_numa_policy=interleave when needed (latest)
+
+* arm_loader: Add iommu_dma_numa_policy=interleave when needed
+  This applies a similar numa interleave for iommu dma kernel allocations.
+  This includes buffers allocated for hevc and v3d.
+  See: https://forums.raspberrypi.com/viewtopic.php?t=392666
+
+## 2025-10-14: recovery: Use ROM boot-mode to detect rpiboot (latest)
+
+* recovery: Use ROM boot-mode flag to detect rpiboot mode
+  In recovery-mode use the bootrom register flag to detect the
+  original boot-mode rather than looking at whether the rpiboot
+  usb-device boot driver is initialised.
+* Manufacturing test updates.
+
+## 2025-10-08: Fix accidental set of PM_RSTS bit 5 when stopping watchdog (latest)
+
+* Fix accidental set of PM_RSTS bit 5 when stopping watchdog
+  Fix an issue in the watchdog code where the raw PM_RSTS value
+  was used as partition number. If HADWRF (bit 5) was set (on reboot)
+  this could cause bit 10 to be set. If an OS didn't clear the partition
+  flags on reboot then this could end up being treated as request to
+  boot from partition 32.
+
+## 2025-10-03: arm_dt: Report OTP SDRAM size via device-tree (latest)
+
+* arm_dt: Report OTP SDRAM size via device-tree
+  Report the SDRAM in gigabits via device-tree as
+  /proc/device-tree/chosen/rpi-sdram-size-gbit. Scripts reporting the
+  device-capabilities should use this value (if defined) instead of the
+  memory-size field in the boardrev row.
+* Apply UART_BAUD in early bootsys UART init
+  Update bootsys and fatal error handlers to use the user
+  defined UART_BAUD rate.
+* rpifwcrypto: Add support for ECDSA P-256 key generation
+  Also, slightly improve the entropy by passing the system
+  timer value as the personality string.
+
+## 2025-09-23: Fix network install regression on Pi4 (latest)
+
+* Fix network install regression on Pi4
+  Fix an issue with the ECDSA signature code which caused network
+  install to fail to load on Pi4.
+* Fix TFTP to allow larger files
+  Allow TFTP block counter to rollover to 0.
+  See: https://github.com/raspberrypi/rpi-eeprom/issues/720
+
+## 2025-09-22: Add LZ4 decompressor (latest)
+
+* Add LZ4 decompressor
+  LZ4 gives a better compression ratio than the previously used CK compress. The bootloader can now decompress both LZ4 compressed files and CK compressed files.
+* rpifwcrypto: Add GET_CRYPTO_PRIVATE_KEY mailbox API
+  For provisioning, add a new mailbox API which returns the private key
+  in DER format. The API will return an error if the key-status for
+  the specified key is LOCKED.
+* config: Add support for board_attributes in conditional expressions
+  Add support for the board-attributes row in config.txt conditional
+  expressions. This can be used to change boot behavior for
+  Compute Module Lite / No-WiFi etc.
+* board_info: Log the OTP board revision at startup
+  Log the board revision plus the raw OTP value at startup.
+
+## 2025-08-27: Fix PARTITION property to allow default (0) partition to be overridden (latest)
+
+* Fix PARTITION property to allow default (0) partition to be overridden
+  Fix the partition selection to allow the bootloader PARTITION
+  property to override the reboot partition number if the reboot
+  argument is 0 or > 31. Previously, it was only allowing
+  partition numbers > 31 to be overridden.
+  See: https://github.com/raspberrypi/rpi-eeprom/issues/743
+* Enable RPIBOOT in BOOT_ORDER / set-reboot-order
+  Previously, rpiboot required the bootrom to have initialised
+  rpiboot before running the firmware. Update the rpiboot
+  initialisation so that rpiboot to be enabled after booting from
+  SPI flash.
+  This could be selectively enabled by setting BOOT_ORDER property
+  (0x3) behind a GPIO conditional in the EEPROM config. On Pi5, the
+  set_reboot_order config.txt option or mailbox property can be
+  used to set a one-time boot-order on
+  N.B. There is no timeout for RPIBOOT so this should only be set
+  as the last boot mode OR used with a boot_watchdog.
+
+## 2025-08-20: Fix PARTITION_WALK for missing start.elf files (latest)
+
+* Fix PARTITION_WALK for missing start.elf files
+  Fix a missing call to bootloader_reset_state so that PARTITION_WALK
+  will work if the boot-partition is FAT, contains config.txt etc
+  but does not have valid firmware.
+  See: https://github.com/raspberrypi/rpi-eeprom/issues/738
+* force_eeprom_read=0 disables HAT I2C
+  Although setting force_eeprom_read=0 has always prevented the HAT EEPROM
+  from being read, with the recent changes to support Power HAT+s it does
+  not prevent an early scan to see if such an EEPROM exists. This can be
+  problematic for applications where the I2C0 pins have been repurposed.
+  Change the inhibit logic to cut all HAT I2C probing off at the knees,
+  including any automatic settings of usb_max_current_enable, as it should
+  always have done.
+  See: https://github.com/raspberrypi/firmware/issues/1985
+* bootcode.bin: Add support for boot.img ramdisk on Pi3 and earlier
+  Add support for boot.img ramdisk support, enable by adding boot_ramdisk=1
+  in config.txt
+* rpifwcrypto: Preliminary firmware support for rpifwcrypto API
+* Add config.txt to block GET_CUSTOMER_PRIVATE_KEY mailbox API
+  lock_device_private_key=1
+
+## 2025-08-13: Enable PARTITION_WALK property by default (latest)
+
+* Enable the PARTITION_WALK property by default
+  Previously, the new PARTITION_WALK which searches for bootable
+  partitions after a failure had to be explicitly enabled. Change
+  the default to be enabled by default. It can be switched off by
+  setting PARTITION_WALK=0 in the EEPROM config.
+* Optimise bootmain for size on Pi4
+  Pi4 only has a 512KB SPI flash EEPROM and the addition of features
+  plus fixes is now causing contention for space between the code and
+  the EEPROM config. Since bootmain is only responsible for loading
+  start.elf revert to the original configuration which is optimised
+  for size rather than speed. Pi5 continues to be optimised for speed.
+
+## 2025-07-17: arm_loader: Also require the early-watchdog property (latest)
+
+* arm_loader: Also require the early-watchdog property
+  The change correcting the implementation of dtoverlay_is_enabled had the
+  unintended consequence of causing the firmware to enable the watchdog
+  even though the user had not explicitly requested it. This is harmless
+  on Linux because the watchdog driver takes over and disarms it, but on
+  other operating systems this can lead to a reboot. Avoid this problem
+  by also requiring the presence of a new property, "early-watchdog".
+  See: https://github.com/raspberrypi/firmware/issues/1980
+* helpers/config_loader: Add bootvar0 eeprom config that can be used in config.txt section expressions
+  This allows an eeprom config setting (e.g. BOOTVAR0=0x10) to be set on a board
+  which config.txt can use as a conditional expression (e.g. [bootvar0&0x10]).
+* arm_loader: Fix boot-watchdog stop on Pi4
+  Fix a problem where the boot_watchdog heartbeat timer was not
+  stopped correctly which could cause it to clash with the kernel
+  watchdog driver.
+
+## 2025-07-03: Check for SD card overcurrent (latest)
+
+* board_info: Use the Ethernet PHY address probed by the bootloader
+  Use the Ethernet PHY address supplied by the bootloader in
+  preference to the static configurations defined in start4.elf
+* Check for SD card overcurrent on Pi5, Pi500 and Pi4
+  Before booting, the bootloader now checks the SD power switch
+  overcurrent signal. The overcurrent signal occurs if the SD
+  card is damaged and has a short circuit which will cause it to
+  get hot.
+  If an over-current condition is detected the bootloader switches
+  switches off power to the SD card and waits five seconds before
+  probing the SD card again. This error is displayed on the
+  diagnostic screen, the UART and the activity LED (1 long, 2 short)
+  flashes.
+  The check can be switched to a non-blocking warning  by setting
+  SD_OVERCURRENT_CHECK=0 in the bootloader config.
+* Add a new error code pattern for SD overcurrent
+  Add a new error pattern (1 long, 2 short) to signal SD card
+  overcurrent.
+* Add support for a bootloader watchdog
+  Add support for a boot watchdog (using PM_RSTC hw wdog) which will
+  trigger if the OS is not started within the specified amount of time. The
+  watchdog is enabled by setting the BOOT_WATCHDOG_TIMEOUT=N (seconds)
+  property in the bootlaoder config.
+  The BOOT_WATCHDOG_PARTITION=P property can be set to pass a different
+  partition number to the bootloader on reset if the watchdog
+  is triggered.
+  The boot watchdog is automatically cleared just before starting
+  the OS and (optionally) enabling the kernel watchdog.
+* Skip first SD boot if no card detected
+  On platforms with an SD Card detect signal, skip the first attempt to
+  boot from SD if the card appears to be absent. This can save over a
+  second on a cold boot, and a little under a second for a reboot.
+
 ## 2025-05-16: 2711: Automatically set revoke_devkey if program_pubkey=1 (latest)
 
 * 2711: (recovery) Automatically set revoke_devkey if program_pubkey=1
@@ -15,7 +292,7 @@
   that the second stage bootloader is counter-signed with the customer's
   private key.
 
-## 2025-05-13: Promote 2025-05-08 to the default release (default)
+## 2025-05-13: Promote 2025-05-08 to the default release (default) (automatic)
 
 ## 2025-05-08: Implement TCP window for net boot (latest)
 * Signed boot and HTTP boot mode
