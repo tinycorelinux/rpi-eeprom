@@ -1,5 +1,191 @@
 # Raspberry Pi5 bootloader EEPROM release notes
 
+## 2026-08-12: Clear UV / OV PMIC power-on reset event for non-USB power supplies (latest)
+
+* Fix USB-C cable orientation detection
+  Fix a typo which caused the wrong register to be read when reporting
+  the USB-C cable orientation in the bootloader HDMI diagnostics screen.
+  Previously, this would only ever report CC1 instead of CC1 or CC2.
+* Clear UV / OV PMIC power-on reset event for non-USB power supplies
+  If the Pi is powered through the 40-pin header then it's possible for
+  the under-voltage or under-voltage PMIC reset events to be set even
+  if the PMIC didn't actually reset. Mask out these bits in the
+  device-tree node to avoid suprious under-voltage warnings in the
+  desktop.
+* config: Switch more config string lookups to use the more effient macros
+* plat_conf: Cache absent clock and pll overrides
+* arm_loader_dvfs: Only update low voltage state when required
+* power_2712: Cache last turbo state to avoid unneeded I2C accesses
+
+## 2026-08-04: arm_mbox: Avoid slow calls every mbox message (latest)
+
+* arm_mbox: Avoid slow calls every mbox message
+  They are only meant to be called every 100ms (arm_loader_update_throttled_status)
+  or 20ms (power_monitor_execute) but are called once per mbox message.
+* arm_2712: Avoid waiting for an already consumed latch
+  rtos_latch_try() acquires the latch if a message is already waiting
+  (the IRQ handler released it).
+* arm_dt: Store detected but unknown display ID in device tree
+  For DSI displays where the ID provided by the MCU is unknown,
+  store the value read in device tree so that userspace can do
+  something.
+* arm_loader_dvfs: Make enable request on unset clock quieter
+  The current kernel does trigger this path during initialisation.
+  Pull in RP1 firmware at d6df137696bdb672690a9f5117b332d2dc5bae47
+* camera_subsystem: Account for CSS_CMD_DELAY with the read cache
+  Store the elapsed time of the I2C read in the cache so that we correctly
+  account for any CSS_CMD_DELAY commands in the read sequence and ensure
+  they are correcly handled if cached.
+* camera_subsystem: Cache the I2C transactions for efficiency where possible
+  Some sensors share the same I2C address and id register locations, so
+  we might save a few ms by caching i2c transactions in such cases.
+* camera_subsystem: Cull unused cameras from the table
+  These are never used and make the table noisy
+  Pull in RP1 firmware at 1facd6e6fc3a1caaa3e3a225e5b5d9eb63471e16
+* camera: Add autodetect for imx355 and imx662
+
+## 2026-06-29: Fix auto_initramfs take 3 (latest)
+
+* Fix auto_initramfs take 3
+  The previous fix to avoid a double os_prefix in the initramfs path was
+  wrong in three ways:
+  1. It ignored the os_prefix when checking for the existence of the
+  matching initramfs file.
+  2. It didn't use any absolute path in kernel_file= when looking for the
+  initramfs.
+  3. It created a whole new path when one already existed.
+  See: https://forums.raspberrypi.com/viewtopic.php?t=399185
+* Revert "arm_ldconfig: Avoid double os_prefix on initramfs"
+  This reverts commit 3992d6660028925ddde17479ddd949a857ef6cd7.
+  See: https://forums.raspberrypi.com/viewtopic.php?t=399185
+* dtoverlay: Permit writing dtb phandles
+  Overwriting a phandle in a base DTB is usual a bad idea, but there are
+  cases where doing so (or writing one into a target node that doesn't
+  yet have one) can be useful. Rather than trying to do something clever
+  and/or time-consuming, invent a magic property that enables such
+  overwriting on a per-fragment basis.
+
+## 2026-06-17: rpi-fw-crypto fine-grained locking (latest)
+
+* rpi-fw-crypto fine-grained locking
+  Crypto operations can be individually locked per key until after reboot
+  using rpi-fw-crypto set-key-status. Reading, signing, hmac, setting key usage
+  and generating a key can each individually be locked. Setting key usage and
+  generating a key can be locked with lock_device_key_write=1 in config.txt.
+* Use UTC for BUILD_DATE and BUILD_TIME
+  Expand BUILD_TIMESTAMP using (date -u) for the human readable
+  date / timestamp strings.
+  See: https://github.com/raspberrypi/rpi-eeprom/pull/850
+* fix wrap issue with platform_stc64
+  It is unsafe to read lo and hi registers separately
+  around the wrap point (every 71m)
+* gencmd: Disable pmicrd and pmicwr if secure-boot is enabled
+* arm_dt: Avoid incompatible overlay memory leak
+  Overlay loading is now aborted early if the overlay map says that it
+  isn't compatible. Unfortunately that error path leaked the memory used
+  to hold any parameters passed to the overlay. Plug the leak.
+* Stop the heartbeat with the watchdog
+  There is no reason to keep the watchdog heartbeat going when the
+  watchdog is stopped. Ensure the heartbeat is also stopped.
+  See: https://github.com/raspberrypi/firmware/issues/2023
+* arm_dt: Defer overlay_map loading until needed
+  There is no need to load the overlay map if overlays are not being used.
+  Defer the loading of overlay_map until it is actually needed, saving a
+  few tens of milliseconds.
+* arm_dt: Drop an overlay if remapping fails
+  If the process of overlay name remapping explicitly fails by returning
+  NULL, don't proceed to apply the overlay anyway - it has been rejected.
+* Avoid an unnecessary relocation
+  ARM64 kernels include a load address in the header, but others don't.
+  For those cases, treat an explicit kernel_address setting as gospel,
+  potentially avoiding an unnecessary relocation.
+* Set RP1 UART baud to the value configured in eeprom config
+  See: https://github.com/raspberrypi/rpi-eeprom/issues/765
+* arm-loader: Restrict SET_VOLTAGE to core-voltage on Pi4 and newer.
+  With LPDDR4 the SDRAM is initialised by Broadcom's DPFE
+  firmware which does PHY training. Attempting to adjust the SDRAM
+  voltage independently of this will just make the system less stable
+  so switch off this legacy behavior on Pi4 and newer.
+
+## 2026-05-27: Promote pieeprom-2026-05-26 to the default release (default)
+
+## 2026-05-26: Make Pi 5 use the correct entropy source for kaslr-seed and rng-seed (latest)
+
+* Make Pi 5 use the correct entropy source
+  The kernel looks to Device Tree for the rng-seed and kaslr-seed values
+  as sources of entropy. On Pi 5 the bootsys code enables the HWRNG, but
+  for historical reasons these two DT properties were not using the
+  resulting random data. Fix that.
+
+## 2026-05-22: Allow string values to enable fragments (latest)
+
+* Allow string values to enable fragments
+  It can be convenient to write a string value to a property and enable
+  the fragment containing the property with a single parameter. This
+  commit makes it possible, even when the string doesn't have an obvious
+  boolean value. If conditional (=,!) operators are used, a non-empty
+  string is true and an empty string is false.
+  See: https://github.com/raspberrypi/utils/pull/183
+
+## 2026-05-20: recovery: 2712: reboot order and reboot arg option (latest)
+
+* recovery: 2712: reboot order and reboot arg option
+  Add support for set_reboot_order and set_reboot_arg1 in
+  recovery config.txt, so that recovery.bin can set them when
+  it has been loaded over rpiboot.
+
+## 2026-05-17: rpi-fw-crypto can get and set key usage in otp (latest)
+
+* rpi-fw-crypto can get and set key usage in otp
+  A key usage descriptor can be stored and read from otp to identify
+  what the key in otp is used for. The rpi-fw-crypto CLI provides
+  the interface to do so.
+
+## 2026-05-13: 2712: Add support for A/B bootloader updates (latest)
+
+* Add support for A/B bootloader updates.
+* arm_loader_dvfs: Clock driver refactor support kernel FW clock driver improvements
+
+
+## 2026-05-11: 2712: Promote 2026-05-11 to the default release (default)
+
+## 2026-05-11: 2712: Set bootloader mfg verison id to 1 (latest)
+
+* 2712: Set bootloader mfg verison id to 1
+  Advance the minimum version id to 1 to indicate support for new SDRAM
+  variants.
+* Add MFG_VER string for rpi-eeprom-update minver check
+  On new boards, the minimum recommended version will be written
+  to OTP. This will allow rpi-eeprom-update to check the minimum
+  recommended version required by the hardware against the version
+  field embedded in EEPROM image binary.
+  strings pieeeprom.bin | grep 'MFG_VER:'
+* pi5: Record hardware board information in OTP
+  On Pi5 report minimal bootloader version via device-tree under
+  /proc/device-tree/chosen/rpi-min-boot-ver.
+
+## 2026-04-30: 2712: arm_boot: Enable turbo clocks before loading the kernel (latest)
+
+* arm_display: Correct logging message hdmi_pixel_freq_limit
+  Noticed in a raspinfo log file.
+* Increase default v3d frqeuency on 2712d0
+* pi5: arm_boot: Enable turbo clocks before loading the kernel
+  Originally, for the entire boot ran at the idle-operating
+  point. Subsequently, the default for intial_turbo was changed so
+  that the kernel is started with turbo-clocks unless disabled
+  via config.txt.
+  This change enables the turbo-clocks as soon as it is safe as soon
+  as the turbo voltage has been calibrated to speedup kernel loading
+  and device-tree processing.
+  This reduces boot time by approximately 1 second on a Pi5 booting
+  from NVMe.
+
+## 2026-04-27: Broadcom SDRAM firmware update to 4.72 (latest)
+
+Broadcom SDRAM firmware update to 4.72
+
+Update the Broadcom SDRAM firmware to 4.72 to support additional memory variants.
+
 ## 2026-04-14: Update recovery.bin to support more SDRAM variants (latest)
 
 * Update the slow (non tuned) DDR init used by recovery.bin to support

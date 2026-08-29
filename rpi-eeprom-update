@@ -44,6 +44,8 @@ RPI_EEPROM_SELF_UPDATE="${RPI_EEPROM_SELF_UPDATE:-0}"
 RPI_EEPROM_SELF_UPDATE_MIN_VER=1650968668
 
 DT_BOOTLOADER_TS=${DT_BOOTLOADER_TS:-/proc/device-tree/chosen/bootloader/build-timestamp}
+DT_MIN_BOOT_VER=${DT_MIN_BOOT_VER:-/proc/device-tree/chosen/rpi-min-boot-ver}
+STRICT_MIN_VER_CHECK=${STRICT_MIN_VER_CHECK:-0}
 
 EXIT_SUCCESS=0
 EXIT_UPDATE_REQUIRED=1
@@ -56,6 +58,11 @@ OVERWRITE_CONFIG=0
 # Timestamp for first release which doesn't have a timestamp field
 BOOTLOADER_FIRST_VERSION=1557513636
 EEPROM_SIZE=524288
+# BOOT_VER is checked against the manufacturing version in OTP to verify
+# that this script is new enough to correctly update the bootloader on this board.
+BOOT_VER_2711=1
+BOOT_VER_2712=1
+MIN_BOOT_VER=0
 BOARD_INFO=
 BOARD_REVISION=
 BOARD_TYPE=
@@ -92,17 +99,21 @@ cleanup() {
    if [ -f "${NEW_EEPROM_CONFIG}" ]; then
       rm -f "${NEW_EEPROM_CONFIG}"
    fi
-   if [ -f "${FLASHROM_LOG}" ]; then
-      rm -f "${FLASHROM_LOG}"
+   if [ -f "${IMMEDIATE_UPDATE_LOG}" ]; then
+      rm -f "${IMMEDIATE_UPDATE_LOG}"
    fi
    if [ -d "${TMP_BOOTFS_MNT}" ]; then
       umount "${TMP_BOOTFS_MNT}"
       rmdir "${TMP_BOOTFS_MNT}"
    fi
+   if [ -f "${FLASHROM_LOG}" ]; then
+      rm -f "${FLASHROM_LOG}"
+   fi
    TMP_BOOTFS_MNT=
    TMP_EEPROM_IMAGE=
    TMP_EEPROM_CONFIG=
    NEW_EEPROM_CONFIG=
+   IMMEDIATE_UPDATE_LOG=
    FLASHROM_LOG=
 }
 trap cleanup EXIT
@@ -114,6 +125,10 @@ die() {
 
 warn() {
    echo "$@" >&2
+}
+
+readDtInt() {
+   printf "%d" "0x$(od "$1" -v -An -t x1 | tr -d ' ')"
 }
 
 getBootloaderConfig() {
@@ -191,7 +206,50 @@ prepareImage()
    fi
 }
 
-runFlashrom()
+isABCapableImage() {
+   offset=0x10008
+   count=8
+   bootsys="bootsys"
+   filename=$(dd if="${TMP_EEPROM_IMAGE}" bs=1 skip=$((offset)) count=$((count)) status=none | strings)
+   if [ "${filename}" = "${bootsys}" ]; then
+      return 0
+   fi
+   return 1
+}
+
+runABUpdate()
+{
+   attempts=5
+   TMP_AB_EEPROM_IMAGE="$(mktemp)"
+   dd if="${TMP_EEPROM_IMAGE}"  of="${TMP_AB_EEPROM_IMAGE}"  bs=1 skip=65536 count=1011712 > /dev/null 2>&1
+   while [ ${attempts} -gt 0 ]; do
+      echo "rpi-eeprom-ab update ${TMP_AB_EEPROM_IMAGE}"
+      if rpi-eeprom-ab update "${TMP_AB_EEPROM_IMAGE}" >> "${IMMEDIATE_UPDATE_LOG}"; then
+         update_sha256=$(sha256sum "${TMP_AB_EEPROM_IMAGE}" | awk '{print $1}')
+         echo "Marking next partition as valid"
+         if rpi-eeprom-ab mark-partition-valid "${update_sha256}" >> "${IMMEDIATE_UPDATE_LOG}"; then
+            if [ "${AB_EEPROM_FORCE_COMMIT}" -eq 1 ]; then
+               echo "Force committing update"
+               if rpi-eeprom-ab force-commit-opposite >> "${IMMEDIATE_UPDATE_LOG}"; then
+                  echo "Force commit opposite: SUCCESS"
+                  return 0
+               fi
+            else
+               echo "Mark partition valid: SUCCESS"
+               return 0
+            fi
+         fi
+      fi
+      attempts=$((attempts - 1))
+      if [ ${attempts} -gt 0 ]; then
+         echo "Failed to update bootloader using AB update. Retrying."
+      fi
+   done
+   return 1
+}
+
+
+runFlashromUpdate()
 {
    attempts=5
    freq=16000
@@ -199,9 +257,9 @@ runFlashrom()
    # If flashrom fails then retry at a lower speed.
    while [ ${attempts} -gt 0 ]; do
       echo "flashrom -p linux_spi:dev=${SPIDEV},spispeed=${freq} -w ${BOOTFS}/pieeprom.upd"
-      if flashrom -p linux_spi:dev=${SPIDEV},spispeed=${freq} -w "${BOOTFS}/pieeprom.upd" >> "${FLASHROM_LOG}"; then
+      if flashrom -p linux_spi:dev=${SPIDEV},spispeed=${freq} -w "${BOOTFS}/pieeprom.upd" >> "${IMMEDIATE_UPDATE_LOG}"; then
          echo "Verifying update"
-         if flashrom -p linux_spi:dev=${SPIDEV},spispeed=${freq} -v "${BOOTFS}/pieeprom.upd" >> "${FLASHROM_LOG}"; then
+         if flashrom -p linux_spi:dev=${SPIDEV},spispeed=${freq} -v "${BOOTFS}/pieeprom.upd" >> "${IMMEDIATE_UPDATE_LOG}"; then
             echo "VERIFY: SUCCESS"
             return 0
          else
@@ -234,22 +292,45 @@ applyRecoveryUpdate()
    findBootFS
    echo "    BOOTFS: ${BOOTFS}"
 
+   # Check the minimum version programmed during board manufacture
+   if [ -n "${BOOTLOADER_UPDATE_IMAGE}" ]; then
+      image_boot_ver=$(strings "${BOOTLOADER_UPDATE_IMAGE}" | sed -n 's/^MFG_VER: //p' | head -n 1)
+      if [ -z "${image_boot_ver}" ]; then
+          image_boot_ver=0
+      fi
+      if [ "${MIN_BOOT_VER}" != 0 ] && [ "${MIN_BOOT_VER}" -gt "${image_boot_ver}" ]; then
+         warn
+         warn "WARNING: Bootloader image version MFG_VER: ${image_boot_ver} is older than the board manufacture version (${MIN_BOOT_VER})."
+         warn
+         if [ "${STRICT_MIN_VER_CHECK}" = 1 ]; then
+            die "ERROR: Update image is not supported by this device. Exiting."
+         fi
+      fi
+   fi
+
    if [ -n "${BOOTLOADER_UPDATE_IMAGE}" ]; then
         [ -f "${BOOTLOADER_UPDATE_IMAGE}" ] || die "${BOOTLOADER_UPDATE_IMAGE} not found"
 
         TMP_EEPROM_IMAGE="$(mktemp)"
         prepareImage
+        if [ "${AB_EEPROM}" -eq 1 ] && ! isABCapableImage; then
+           warn "WARNING: The eeprom update image is not AB capable. Setting RPI_EEPROM_IMMEDIATE_UPDATE to 0"
+           RPI_EEPROM_IMMEDIATE_UPDATE=0
+           AB_EEPROM=0
+        fi
 
-        # Generate a .sig file containing the sha256 hash of the EEPROM image
-        # and the current timestamp.
-        rpi-eeprom-digest -i "${TMP_EEPROM_IMAGE}" -o "${BOOTFS}/pieeprom.sig"
+        if [ "${AB_EEPROM}" -ne 1 ]; then
+           # Generate a .sig file containing the sha256 hash of the EEPROM image
+           # and the current timestamp.
+           rpi-eeprom-digest -c "${BCM_CHIP}" -i "${TMP_EEPROM_IMAGE}" -o "${BOOTFS}/pieeprom.sig"
 
-        cp -fv "${TMP_EEPROM_IMAGE}" "${BOOTFS}/pieeprom.upd" \
-                || die "Failed to copy ${TMP_EEPROM_IMAGE} to ${BOOTFS}"
+           cp -fv "${TMP_EEPROM_IMAGE}" "${BOOTFS}/pieeprom.upd" \
+                   || die "Failed to copy ${TMP_EEPROM_IMAGE} to ${BOOTFS}"
 
-        # For NFS mounts ensure that the files are readable to the TFTP user
-        chmod -f go+r "${BOOTFS}/pieeprom.upd" "${BOOTFS}/pieeprom.sig" \
-                || die "Failed to set permissions on eeprom update files"
+           # For NFS mounts ensure that the files are readable to the TFTP user
+           chmod -f go+r "${BOOTFS}/pieeprom.upd" "${BOOTFS}/pieeprom.sig" \
+                   || die "Failed to set permissions on eeprom update files"
+        fi
    fi
 
    if [ -n "${VL805_UPDATE_IMAGE}" ]; then
@@ -281,27 +362,39 @@ applyRecoveryUpdate()
 
    [ "${BOOTLOADER_CURRENT_VERSION}" -ge "${RPI_EEPROM_SELF_UPDATE_MIN_VER}" ] || RPI_EEPROM_SELF_UPDATE=0
 
-   # For immediate updates via flash the recovery.bin update is created and then discarded if the
+   # For immediate updates via flashrom the recovery.bin update is created and then discarded if the
    # flashrom update was successful. For SD boot (most common) this provides a rollback in the event
    # of power loss.
-   if [ "${RPI_EEPROM_USE_FLASHROM}" = 1 ]; then
+   if [ "${RPI_EEPROM_IMMEDIATE_UPDATE}" = 1 ]; then
       echo
       echo "UPDATING bootloader. This could take up to a minute. Please wait"
       echo
-      echo "*** Do not disconnect the power until the update is complete ***"
-      echo
-      echo "If a problem occurs then the Raspberry Pi Imager may be used to create"
-      echo "a bootloader rescue SD card image which restores the default bootloader image."
-      echo
-      FLASHROM_LOG="$(mktemp)"
-      if runFlashrom; then
-         # Success - remove update files from the boot partition
-         removePreviousUpdates
-         echo "UPDATE SUCCESSFUL"
+      IMMEDIATE_UPDATE_LOG="$(mktemp)"
+      if [ "${AB_EEPROM}" = 1 ]; then
+         if runABUpdate; then
+            # Success - remove update files from the boot partition
+            removePreviousUpdates
+            echo "UPDATE SUCCESSFUL"
+         else
+            # Leave the recovery files in case the EEPROM has been partially updated
+            cat "${IMMEDIATE_UPDATE_LOG}"
+            die "UPDATE FAILED"
+         fi
       else
-         # Leave the recovery files in case the EEPROM has been partially updated
-         cat "${FLASHROM_LOG}"
-         die "UPDATE FAILED"
+         echo "*** Do not disconnect the power until the update is complete ***"
+         echo
+         echo "If a problem occurs then the Raspberry Pi Imager may be used to create"
+         echo "a bootloader rescue SD card image which restores the default bootloader image."
+         echo
+         if runFlashromUpdate; then
+            # Success - remove update files from the boot partition
+            removePreviousUpdates
+            echo "UPDATE SUCCESSFUL"
+         else
+            # Leave the recovery files in case the EEPROM has been partially updated
+            cat "${IMMEDIATE_UPDATE_LOG}"
+            die "UPDATE FAILED"
+         fi
       fi
       return
    elif [ "${RPI_EEPROM_SELF_UPDATE}" = "1" ]; then
@@ -314,8 +407,30 @@ applyRecoveryUpdate()
    echo ""
    echo "EEPROM updates pending. Please reboot to apply the update."
 
-   if [ "${RPI_EEPROM_USE_FLASHROM}" = 0 ]; then
+   if [ "${RPI_EEPROM_IMMEDIATE_UPDATE}" = 0 ]; then
       echo "To cancel a pending update run \"sudo rpi-eeprom-update -r\"."
+   fi
+}
+
+printFlashromChipDetails() {
+   # Parse the verbose flashrom probe for the chip name and capacity
+   # If unknown chip, then print the JEDEC ID and capacity
+   flashrom_log="$1"
+
+   flashrom_chip_line=$(grep -m1 -E '^(Found|Assuming) .+ flash chip "' "${flashrom_log}") || return 0
+   flashrom_vendor=$(echo "${flashrom_chip_line}" | sed -n 's/^\(Found\|Assuming\) \(.*\) flash chip ".*/\2/p')
+   flashrom_capacity=$(echo "${flashrom_chip_line}" | sed -n 's/.*(\([0-9][0-9]*\) kB,.*/\1/p')
+
+   if [ "${flashrom_vendor}" = "Unknown" ]; then
+      flashrom_jedec_id=$(grep -m1 -E 'id1 0x[0-9a-fA-F]+, id2 0x[0-9a-fA-F]+' "${flashrom_log}" | sed -n 's/.*\(id1 0x[0-9a-fA-F]*, id2 0x[0-9a-fA-F]*\).*/\1/p')
+      if [ -n "${flashrom_jedec_id}" ]; then
+         echo "Unrecognised flash chip: JEDEC ${flashrom_jedec_id}, capacity ${flashrom_capacity:-unknown} kB"
+      else
+         echo "Unrecognised flash chip: capacity ${flashrom_capacity:-unknown} kB"
+      fi
+   else
+      flashrom_name=$(echo "${flashrom_chip_line}" | sed -n 's/.*flash chip "\(.*\)" (.*/\1/p')
+      echo "Detected flash chip: ${flashrom_vendor} ${flashrom_name}, capacity ${flashrom_capacity} kB"
    fi
 }
 
@@ -342,21 +457,28 @@ applyUpdate() {
    fi
 
    # Disable flashrom if the SPI device is not found
-   if [ "${RPI_EEPROM_USE_FLASHROM}" = 1 ]; then
+   if [ "${RPI_EEPROM_IMMEDIATE_UPDATE}" = 1 ] && [ "${AB_EEPROM}" -ne 1 ]; then
+      echo "Checking flashrom probe"
       flashrom_probe_ok=0
-      if ! [ -e "${SPIDEV}" ]; then
-         warn "WARNING: SPI device ${SPIDEV} not found. Setting RPI_EEPROM_USE_FLASHROM to 0"
-      fi
+      FLASHROM_LOG="$(mktemp)"
 
-      if ! flashrom -p linux_spi:dev=${SPIDEV},spispeed=16000 > /dev/null 2>&1; then
+      if ! [ -e "${SPIDEV}" ]; then
+         warn "WARNING: SPI device ${SPIDEV} not found"
+      elif ! flashrom -p linux_spi:dev=${SPIDEV},spispeed=16000 -V > "${FLASHROM_LOG}" 2>&1; then
          warn "WARNING: Flashrom probe of ${SPIDEV} failed"
+      elif grep -q "Unknown flash" "${FLASHROM_LOG}"; then
+         # Generic SFDP handling is not supported because some chips have
+         # been known to have incorrect SFDP data
+         printFlashromChipDetails "${FLASHROM_LOG}"
+         warn "WARNING: Flashrom probe of ${SPIDEV} reported Unknown flash chip"
       else
+         printFlashromChipDetails "${FLASHROM_LOG}"
          flashrom_probe_ok=1
       fi
       if [ "${flashrom_probe_ok}" != 1 ]; then
-         echo "Setting RPI_EEPROM_USE_FLASHROM to 0"
+         echo "Setting RPI_EEPROM_IMMEDIATE_UPDATE to 0"
          echo
-         export RPI_EEPROM_USE_FLASHROM=0
+         export RPI_EEPROM_IMMEDIATE_UPDATE=0
       fi
    fi
 
@@ -367,7 +489,7 @@ BOOTLOADER_CURRENT_VERSION=
 getBootloaderCurrentVersion() {
    if [ -f "${DT_BOOTLOADER_TS}" ]; then
       # Prefer device-tree to vcgencmd
-      BOOTLOADER_CURRENT_VERSION=$(printf "%d" "0x$(od "${DT_BOOTLOADER_TS}" -v -An -t x1 | tr -d ' ' )")
+      BOOTLOADER_CURRENT_VERSION=$(readDtInt "${DT_BOOTLOADER_TS}")
    elif vcgencmd bootloader_version | grep -q timestamp; then
       BOOTLOADER_CURRENT_VERSION=$(vcgencmd bootloader_version | grep timestamp | awk '{print $2}')
       if [ "${BOOTLOADER_CURRENT_VERSION}" = "0" ]; then
@@ -432,19 +554,45 @@ checkDependencies() {
       EEPROM_SIZE=2097152
       BOOTLOADER_AUTO_UPDATE_MIN_VERSION="${BOOTLOADER_AUTO_UPDATE_MIN_VERSION:-1746713597}"
       SPIDEV=/dev/spidev10.0
-      # Default is to use flashrom if availableon BCM2712
-      RPI_EEPROM_USE_FLASHROM=${RPI_EEPROM_USE_FLASHROM:-1}
+      # Default is to use immediate update if available on BCM2712
+      RPI_EEPROM_IMMEDIATE_UPDATE=${RPI_EEPROM_IMMEDIATE_UPDATE:-1}
+      if command -v rpi-eeprom-ab > /dev/null && rpi-eeprom-ab spi-check > /dev/null 2>&1; then
+         # If AB commands are available and immediate update is enabled then default is to use AB EEPROM
+         if [ "${RPI_EEPROM_IMMEDIATE_UPDATE}" -eq 1 ]; then
+            AB_EEPROM=${AB_EEPROM:-1}
+         fi
+         # Default is to force commit the update when using AB updates
+         AB_EEPROM_FORCE_COMMIT=${AB_EEPROM_FORCE_COMMIT:-1}
+      else
+         if [ -n "${AB_EEPROM}" ] && [ "${AB_EEPROM}" -eq 1 ]; then
+            die "AB_EEPROM=1 is set but AB EEPROM updates are not supported"
+         fi
+      fi
    else
       chipNotSupported
+   fi
+   AB_EEPROM=${AB_EEPROM:-0}
+
+   if [ -f "${DT_MIN_BOOT_VER}" ]; then
+      MIN_BOOT_VER=$(readDtInt "${DT_MIN_BOOT_VER}")
+   fi
+
+   [ "${BCM_CHIP}" = "2711" ] && pkg_boot_ver=${BOOT_VER_2711} || pkg_boot_ver=${BOOT_VER_2712}
+   if [ "${MIN_BOOT_VER}" != 0 ] && [ "${MIN_BOOT_VER}" -gt "${pkg_boot_ver}" ]; then
+      warn "WARNING: The rpi-eeprom package is out of date. Please run: apt upgrade rpi-eeprom"
    fi
 
    # Default to off - in the future Raspberry Pi 5 may default to using flashrom if
    # flashrom is available.
    if [ "${AUTO_UPDATE_BOOTLOADER}" = 1 ] || [ -n "${BOOTLOADER_UPDATE_IMAGE}" ]; then
-      [ -z "${RPI_EEPROM_USE_FLASHROM}" ] && RPI_EEPROM_USE_FLASHROM=0
-      if [ "${RPI_EEPROM_USE_FLASHROM}" -eq 1 ] && ! command -v flashrom > /dev/null; then
-         warn "WARNING: flashrom not found. Setting RPI_EEPROM_USE_FLASHROM to 0"
-         RPI_EEPROM_USE_FLASHROM=0
+      [ -z "${RPI_EEPROM_IMMEDIATE_UPDATE}" ] && RPI_EEPROM_IMMEDIATE_UPDATE=0
+      if [ "${RPI_EEPROM_IMMEDIATE_UPDATE}" -eq 0 ]; then
+         # If immediate update is disabled then AB EEPROM is not used
+         AB_EEPROM=0
+      fi
+      if [ "${RPI_EEPROM_IMMEDIATE_UPDATE}" -eq 1 ] && [ "${AB_EEPROM}" -ne 1 ] && ! command -v flashrom > /dev/null; then
+         warn "WARNING: flashrom not found. Setting RPI_EEPROM_IMMEDIATE_UPDATE to 0"
+         RPI_EEPROM_IMMEDIATE_UPDATE=0
       fi
    fi
 
@@ -465,9 +613,9 @@ checkDependencies() {
       echo "See: https://github.com/raspberrypi/usbboot/blob/master/Readme.md"
       echo "Run with -h for more information."
       echo
-      echo "To enable flashrom programming of the EEPROM"
+      echo "To enable immediate update programming of the EEPROM"
       echo "Add the following entries to /etc/default/rpi-eeprom-update"
-      echo "RPI_EEPROM_USE_FLASHROM=1"
+      echo "RPI_EEPROM_IMMEDIATE_UPDATE=1"
       echo "CM4_ENABLE_RPI_EEPROM_UPDATE=1"
       echo
       echo "and these entries to config.txt and reboot"
@@ -668,12 +816,14 @@ N.B. If there is a power failure during SELF_UPDATE the EEPROM write may fail an
 usbboot must be used to flash the bootloader EEPROM. SELF_UPDATE is not recommended
 for updating the bootloader on remote systems.
 
-FLASHROM:
+IMMEDIATE UPDATE:
 
-If the RPI_EEPROM_USE_FLASHROM variable is set to 1 then flashrom is used to perform
-an immediate update to the SPI flash rather than installing the recovery.bin plus
-pieeprom.upd files. The power must not be disconnected during this update otherwise the
-EEPROM will need to be re-flashed using the Rasberry Pi Imager bootloader restore feature.
+If the RPI_EEPROM_IMMEDIATE_UPDATE variable is set to 1 then either flashrom or 
+rpi-eeprom-ab is used to perform an immediate update to the SPI flash rather
+than installing the recovery.bin plus pieeprom.upd files. rpi-eeprom-ab is
+used on BCM2712 boards with AB EEPROM already enabled. When using flashrom, the
+power must not be disconnected during this update otherwise the EEPROM will need to be
+re-flashed using the Rasberry Pi Imager bootloader restore feature.
 
 On Raspberry Pi 4, CM4, CM4-S and Pi400 flashrom updates are not enabled by default
 because the SPI GPIOs are shared with analog audio. To enable this add the following
@@ -730,7 +880,7 @@ findBootFS()
    # If ${BOOTFS} is not writable OR is not on /dev/mmcblk0 then error because the ROM
    # can only load recovery.bin from the on-board SD-CARD slot or the EEPROM.
 
-   if blkid | grep -qE "/dev/mmcblk0p1.*LABEL_FATBOOT.*RECOVERY.*TYPE.*vfat"; then
+   if blkid /dev/mmcblk0p1 | grep -qE "/dev/mmcblk0p1.*LABEL_FATBOOT.*RECOVERY.*TYPE.*vfat"; then
       TMP_BOOTFS_MNT="$(mktemp -d)"
       mount /dev/mmcblk0p1 "${TMP_BOOTFS_MNT}"
       BOOTFS="${TMP_BOOTFS_MNT}"
@@ -903,6 +1053,32 @@ removePreviousUpdates()
    fi
 }
 
+# Offer to install an available update. Only prompt if it's safe to do so
+# i.e. running as root with stdin/stdout attached to a terminal and the
+# output is not being captured by another script via the -m option.
+offerUpdatePrompt()
+{
+   [ -t 0 ] && [ -t 1 ] || return 1
+   [ -z "${MACHINE_OUTPUT}" ] || return 1
+   [ "$(id -u)" = "0" ] || return 1
+   if getBootloaderConfig | grep -q FREEZE_VERSION=1; then
+      return 1
+   fi
+
+   echo ""
+   if [ "${RPI_EEPROM_IMMEDIATE_UPDATE:-0}" = 1 ]; then
+      echo "The EEPROM will be updated immediately. Do not disconnect the power until the update is complete."
+   else
+      echo "The update will be installed at the next reboot."
+   fi
+   printf "Install the update now? [y/N] "
+   read -r answer || return 1
+   case "${answer}" in
+      [yY]|[yY][eE][sS]) return 0 ;;
+      *) return 1 ;;
+   esac
+}
+
 checkVersion()
 {
    lookupVersionInfo
@@ -910,11 +1086,20 @@ checkVersion()
    if [ "${ACTION_UPDATE_BOOTLOADER}" = 1 ] || [ "${ACTION_UPDATE_VL805}" = 1 ]; then
       echo "*** UPDATE AVAILABLE ***"
       echo ""
-      echo "Run \"sudo rpi-eeprom-update -a\" to install this update now."
+      echo "Run \"sudo rpi-eeprom-update -a\" to install this update without a prompt."
       echo
       echo "To configure the bootloader update policy run \"sudo ${RPI_EEPROM_UPDATE_CONFIG_TOOL}\""
       echo ""
       printVersions
+      if offerUpdatePrompt; then
+         echo ""
+         AUTO_UPDATE_BOOTLOADER=1
+         AUTO_UPDATE_VL805=1
+         # Match the defaulting normally done by checkDependencies when -a is passed
+         [ -z "${RPI_EEPROM_IMMEDIATE_UPDATE}" ] && RPI_EEPROM_IMMEDIATE_UPDATE=0
+         checkAndApply
+         exit ${EXIT_SUCCESS}
+      fi
       write_status_info "EXIT_UPDATE_REQUIRED"
       exit ${EXIT_UPDATE_REQUIRED}
    else

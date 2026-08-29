@@ -1,5 +1,26 @@
 # Raspberry Pi4 bootloader EEPROM release notes
 
+## 2026-08-04: arm_mbox: Avoid slow calls every mbox message (latest)
+
+* Use UTC for BUILD_DATE and BUILD_TIME
+  Expand BUILD_TIMESTAMP using (date -u) for the human readable
+  date / timestamp strings.
+  See: https://github.com/raspberrypi/rpi-eeprom/pull/850
+
+## 2026-05-26: Promote 2026-05-17 to the default release (default)
+
+## 2026-05-17: Update Broadcom DDR firware to 2.35 (latest)
+
+* 2711: Increase the manufacturing version to 1
+  Increase the manufacturing version to 1 to reflect the update
+  to the Broadcom SDRAM DDR init firmware.
+* 2711: Update SDRAM FW to 2.35
+* arm_loader_dvfs: Preliminary clock driver refactoring
+* pi4: Record hardware board information in OTP
+  On Pi4 report the minimal bootloader version (manufacturing release)
+  in OTP and make it available via device-tree as
+  /proc/device-tree/chosen/rpi-min-boot-ver
+
 ## 2026-04-14: Update Broadcom SDRAM firmware to v2.34 (latest)
 
 * Update the Broadcom SDRAM firmware to v2.34 to support
