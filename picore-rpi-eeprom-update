@@ -88,7 +88,7 @@ function load_deps() {
 	fi
 
 	[ -f ${PACKAGEDIR}/python3.11.tcz ] && PYTHON3PKG=python3.11.tcz
-	[ -f ${PACKAGEDIR}/python3.12.tcz ] && PYTHON3PKG=python3.12.tcz
+	[ -f ${PACKAGEDIR}/python3.14.tcz ] && PYTHON3PKG=python3.14.tcz
 	if [ ! -f ${PACKAGEDIR}/$PYTHON3PKG ]; then
 		echo "python 3 extension is required for this tool"
 		exit 1
